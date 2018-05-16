@@ -1,32 +1,42 @@
 import * as React from 'react';
 import AppBar from 'material-ui/AppBar';
 import IconButton from 'material-ui/IconButton';
+import { red500 } from 'material-ui/styles/colors';
 import NavigationArrowBack from 'material-ui/svg-icons/navigation/arrow-back';
-import { StringIndexer } from '../types';
+import { StringIndexer, RouterMatchParams, WindowDimensions } from '../types';
 import { MatchInfo, StoreState, UserIdToInfo, MyUser } from '../types';
 import { connect } from 'react-redux';
 import { withRouter } from 'react-router-dom';
 import * as H from 'history';
-import { getOpponents, findMatch, deepCopy } from '../globals';
+import { findMatch, deepCopy, shouldHideAppHeader } from '../globals';
 import MoreVertIcon from 'material-ui/svg-icons/navigation/more-vert';
 import VolumeUp from 'material-ui/svg-icons/av/volume-up';
 import VolumeMute from 'material-ui/svg-icons/av/volume-mute';
+import Replay from 'material-ui/svg-icons/av/replay';
+import PersonAdd from 'material-ui/svg-icons/social/person-add';
+import School from 'material-ui/svg-icons/social/school';
+import Delete from 'material-ui/svg-icons/action/delete';
 import { Action } from '../reducers';
 import { dispatch } from '../stores';
 import MenuItem from 'material-ui/MenuItem';
 import IconMenu from 'material-ui/IconMenu';
 import { MatchStateHelper } from '../services/matchStateHelper';
 import { ourFirebase } from '../services/firebase';
+import { Divider, Dialog, FlatButton } from 'material-ui';
 
-interface Props {
-  matchInfo: MatchInfo;
+interface PropsWithoutRouter {
+  matchInfo: MatchInfo | undefined;
   userIdToInfo: UserIdToInfo;
   myUser: MyUser;
-  // react-router-dom says match<P> is the type, not sure what P should be
-  match: any;
+  audioMute: boolean;
+
+  // To ensure the component rerenders when dimensions change.
+  windowDimensions: WindowDimensions | undefined;
+}
+interface Props extends PropsWithoutRouter {
   location: H.Location;
   history: H.History;
-  audioMute: boolean;
+  match: RouterMatchParams;
 }
 
 class AppHeader extends React.Component<Props, {}> {
@@ -34,6 +44,9 @@ class AppHeader extends React.Component<Props, {}> {
     '/login': 'Login',
     '/addMatch': 'Create a new game',
     '/': 'My games'
+  };
+  state = {
+    showRules: false
   };
 
   onPlayingScreen() {
@@ -43,7 +56,6 @@ class AppHeader extends React.Component<Props, {}> {
     }
     return false;
   }
-
   showBackButton() {
     let pathname: string = this.props.location.pathname;
     if (pathname === '/login' || pathname === '/') {
@@ -60,22 +72,10 @@ class AppHeader extends React.Component<Props, {}> {
     } else if (pathname.startsWith('/contactsList/')) {
       return 'Contacts List';
     } else if (pathname.startsWith('/matches/')) {
-      let gameInfo = this.props.matchInfo;
+      let matchInfo = this.props.matchInfo;
       let title = '';
-
-      if (gameInfo) {
-        title = this.props.matchInfo.game.gameName; // String to build
-        if (this.props.matchInfo.participantsUserIds.length > 1) {
-          title += ' with ';
-
-          title += getOpponents(
-            this.props.matchInfo.participantsUserIds,
-            this.props.myUser.myUserId,
-            this.props.userIdToInfo
-          )
-            .map(opponent => opponent.name)
-            .join(', ');
-        }
+      if (matchInfo) {
+        title = matchInfo.game.gameName;
       }
       return title;
     } else {
@@ -106,24 +106,39 @@ class AppHeader extends React.Component<Props, {}> {
   };
 
   handleGameRulesClick = () => {
-    // TODO: don't use window.open (look in material-ui)
-    if (this.props.matchInfo.game.wikipediaUrl) {
-      window.open(this.props.matchInfo.game.wikipediaUrl);
-    }
+    this.setState({ showRules: true });
   };
-
+  handleDialogClose = () => {
+    this.setState({ showRules: false });
+  };
   handleResetMatchClick = () => {
-    let match: MatchInfo = deepCopy(this.props.matchInfo);
+    let match: MatchInfo = deepCopy(this.props.matchInfo!);
     new MatchStateHelper(match).resetMatch();
     ourFirebase.updateMatchState(match);
     console.log('reset match');
   };
 
+  handleLeaveMatchClick = () => {
+    console.log('leave match');
+    ourFirebase.leaveMatch(this.props.matchInfo!);
+    this.props.history.replace('/');
+  };
+
   render() {
     let volume = this.props.audioMute ? <VolumeMute /> : <VolumeUp />;
-    if (this.onPlayingScreen()) {
+    if (this.onPlayingScreen() && this.props.matchInfo) {
+      if (shouldHideAppHeader()) {
+        return null;
+      }
       // We're on Playing Screen, which needs 'add' button and mute button
       console.log('ON PLAYING SCREEN');
+      const isInviteFriendDisabled =
+        this.props.matchInfo.participantsUserIds.length >= ourFirebase.MAX_USERS_IN_MATCH - 1;
+      const isGameRulesDisabled = !this.props.matchInfo.game.wikipediaUrl;
+      const actions = [
+        <FlatButton key="OK" label="OK" primary={true} onClick={this.handleDialogClose} />
+      ];
+      // We're on Playing Screen, which needs 'add' button and mute button
       return (
         <AppBar
           iconElementLeft={
@@ -144,23 +159,50 @@ class AppHeader extends React.Component<Props, {}> {
                 anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
               >
                 <MenuItem
-                  primaryText="Invite a Friend"
+                  primaryText="Invite a friend"
                   onClick={this.handleAddFriendClick}
+                  rightIcon={<PersonAdd />}
+                  disabled={isInviteFriendDisabled}
                 />
                 <MenuItem
-                  primaryText={this.props.audioMute?"Play Game Sounds":"Mute Game Sounds"}
+                  primaryText={this.props.audioMute ? 'Play game sounds' : 'Mute game sounds'}
                   onClick={this.handleAudioClick}
                   rightIcon={volume}
                 />
                 <MenuItem
                   primaryText="Show Game Rules"
-                  onClick={this.handleGameRulesClick.bind(this)}
+                  onClick={this.handleGameRulesClick}
+                  rightIcon={<School />}
+                  disabled={isGameRulesDisabled}
                 />
+                <Divider />
                 <MenuItem
-                  primaryText="Reset Match"
-                  onClick={this.handleResetMatchClick.bind(this)}
+                  style={{ color: red500 }}
+                  primaryText="Reset game"
+                  onClick={this.handleResetMatchClick}
+                  rightIcon={<Replay color={red500} />}
+                />
+                <Divider />
+                <MenuItem
+                  style={{ color: red500 }}
+                  primaryText="Leave game"
+                  onClick={this.handleLeaveMatchClick}
+                  rightIcon={<Delete color={red500} />}
                 />
               </IconMenu>
+              <Dialog
+                title={'Rules for ' + this.props.matchInfo.game.gameName}
+                actions={actions}
+                contentStyle={{ width: '90%', maxWidth: 'none' }}
+                autoDetectWindowHeight={false}
+                autoScrollBodyContent={false}
+                modal={false}
+                open={this.state.showRules}
+                onRequestClose={this.handleDialogClose}
+              >
+                {/* 99% to prevent dialog from having width scrollbar */}
+                <iframe src={this.props.matchInfo.game.wikipediaUrl} width="99%" height="99%" />
+              </Dialog>
             </div>
           }
           title={this.getLocation()}
@@ -168,7 +210,6 @@ class AppHeader extends React.Component<Props, {}> {
       );
     } else if (this.showBackButton()) {
       // We're on a page that needs back button
-      console.log('SHOWING BACK BUTTON');
       return (
         <AppBar
           iconElementLeft={
@@ -181,7 +222,6 @@ class AppHeader extends React.Component<Props, {}> {
       );
     } else {
       // We're on login or matches page
-      console.log('ON LOGIN/HOME PAGE');
       return (
         <AppBar
           title={this.getLocation()}
@@ -193,31 +233,21 @@ class AppHeader extends React.Component<Props, {}> {
   }
 }
 
-const mapStateToProps = (state: StoreState, ownProps: Props) => {
-  let matchInfo;
+const mapStateToProps = (state: StoreState, ownProps: Props): PropsWithoutRouter => {
+  let matchInfo: MatchInfo | undefined;
   let pathname = ownProps.location.pathname;
   // We need match info for title
   if (pathname.startsWith('/matches/')) {
     let matchId = pathname.split('/')[2];
-
     matchInfo = findMatch(state.matchesList, matchId);
-
-    if (matchInfo) {
-      return {
-        matchInfo: matchInfo,
-        userIdToInfo: state.userIdToInfo,
-        myUser: state.myUser,
-        audioMute: state.audioMute
-      };
-    }
   }
-  // We're not on a match or matchInfo is not found
   return {
+    matchInfo: matchInfo,
     userIdToInfo: state.userIdToInfo,
     myUser: state.myUser,
-    audioMute: state.audioMute
+    audioMute: state.audioMute,
+    windowDimensions: state.windowDimensions
   };
 };
 
-// export default connect(mapStateToProps)(withRouter(AppHeader));
-export default withRouter(connect(mapStateToProps)(AppHeader));
+export default withRouter((connect(mapStateToProps) as any)(AppHeader));

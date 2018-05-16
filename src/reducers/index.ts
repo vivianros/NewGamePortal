@@ -9,15 +9,11 @@ import {
   IdIndexer,
   MyUser,
   MatchState,
-  UserIdToInfo
+  UserIdToInfo,
+  WindowDimensions
 } from '../types';
 import { storeStateDefault } from '../stores/defaults';
-import {
-  checkCondition,
-  getPhoneNumberToUserInfo,
-  deepFreeze,
-  shallowCopy
-} from '../globals';
+import { checkCondition, getPhoneNumberToUserInfo, deepFreeze, shallowCopy } from '../globals';
 
 export interface Action {
   // Actions that start with "set" mean that they replace the matching
@@ -33,6 +29,7 @@ export interface Action {
   setSignals?: SignalEntry[];
   restoreOldStore?: StoreState;
   setAudioMute?: boolean;
+  setWindowDimensions?: WindowDimensions;
 }
 
 export function mergeMaps<T>(
@@ -69,7 +66,13 @@ export function checkMatchStateInStore(
   const spec = state.gameSpecs.gameSpecIdToGameSpec[gameSpecId];
   checkCondition(
     '#pieces',
-    matchState.length === 0 || !spec || matchState.length === spec.pieces.length
+    matchState.length === 0 ||
+      !spec ||
+      matchState.length === spec.pieces.length ||
+      // I've changed the game specs for some games and added a new element (a deck)
+      // when cards didn't belong to a deck.
+      // But some existing matches still have one piece less.
+      matchState.length === spec.pieces.length - 1
   );
 }
 
@@ -111,7 +114,7 @@ function fixOldState(oldSavedState: StoreState) {
   return oldSavedState;
 }
 
-function reduce(state: StoreState, action: Action) {
+function reduce(state: StoreState, action: Action): StoreState {
   if (undefined !== action.setGamesList) {
     return { ...state, gamesList: action.setGamesList };
   } else if (undefined !== action.restoreOldStore) {
@@ -136,39 +139,29 @@ function reduce(state: StoreState, action: Action) {
     const { phoneNumberToContact, ...rest } = state;
     const newPhoneNumberToContact = action.updatePhoneNumberToContact;
     return setNamesFromContacts({
-      phoneNumberToContact: mergeMaps(
-        phoneNumberToContact,
-        newPhoneNumberToContact
-      ),
+      phoneNumberToContact: mergeMaps(phoneNumberToContact, newPhoneNumberToContact),
       ...rest
     });
   } else if (undefined !== action.updateGameSpecs) {
-    let {
-      imageIdToImage,
-      elementIdToElement,
-      gameSpecIdToGameSpec
-    } = action.updateGameSpecs;
+    let { imageIdToImage, elementIdToElement, gameSpecIdToGameSpec } = action.updateGameSpecs;
     let { gameSpecs, ...rest } = state;
     return {
       gameSpecs: {
         imageIdToImage: mergeMaps(gameSpecs.imageIdToImage, imageIdToImage),
-        elementIdToElement: mergeMaps(
-          gameSpecs.elementIdToElement,
-          elementIdToElement
-        ),
-        gameSpecIdToGameSpec: mergeMaps(
-          gameSpecs.gameSpecIdToGameSpec,
-          gameSpecIdToGameSpec
-        )
+        elementIdToElement: mergeMaps(gameSpecs.elementIdToElement, elementIdToElement),
+        gameSpecIdToGameSpec: mergeMaps(gameSpecs.gameSpecIdToGameSpec, gameSpecIdToGameSpec)
       },
       ...rest
     };
   } else if (undefined !== action.setAudioMute) {
-    let audio = action.setAudioMute;
-    let { audioMute, ...rest } = state;
     return {
-      ...rest,
-      audioMute: audio
+      ...state,
+      audioMute: action.setAudioMute
+    };
+  } else if (undefined !== action.setWindowDimensions) {
+    return {
+      ...state,
+      windowDimensions: action.setWindowDimensions
     };
   } else {
     return state;

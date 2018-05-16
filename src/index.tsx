@@ -5,16 +5,28 @@ import * as ReactDOM from 'react-dom';
 import MuiThemeProvider from 'material-ui/styles/MuiThemeProvider';
 import { Provider } from 'react-redux';
 import { Route, BrowserRouter } from 'react-router-dom';
-import { isIos, isAndroid, checkCondition, studentsUsers } from './globals';
+import {
+  isIos,
+  isAndroid,
+  checkCondition,
+  studentsUsers,
+  isApp,
+  setLoadingSpinnerVisible
+} from './globals';
 import { store } from './stores/index';
 import App from './App';
-import registerServiceWorker from './registerServiceWorker';
 import './index.css';
 import { ourFirebase } from './services/firebase';
 import { videoChat } from './services/videoChat';
 import { Contact, PhoneNumberToContact } from './types';
 import * as Raven from 'raven-js';
 import * as sentryRelease from './sentry-config.json';
+
+// Service worker is useful for caching the static resources, i.e., react generates service-worker.js with:
+// var precacheConfig=[["/NewGamePortal/index.html","43da4505e69af8c53fff6b8c443e1fb6"],["/NewGamePortal/static/css/
+import registerServiceWorker from './registerServiceWorker';
+
+// No need for web push notifications.
 // import { initPushNotification } from './services/pushNotification';
 
 // We delay calling reactRender until we know if we're logged in or not
@@ -27,13 +39,13 @@ function reactRender() {
   }
   wasReactRenderCalled = true;
 
-  document.getElementById('loadingSpinner')!.style.display = 'none';
+  setLoadingSpinnerVisible(false);
   ReactDOM.render(
     <MuiThemeProvider>
       <Provider store={store}>
         <BrowserRouter
           basename={
-            location.hostname === 'yoav-zibin.github.io'
+            location.hostname === 'yoav-zibin.github.io' || location.hostname.endsWith('zibiga.com')
               ? '/NewGamePortal'
               : '/'
           }
@@ -99,41 +111,80 @@ function createScript(id: string, src: string) {
   let fjs = document.getElementsByTagName('script')[0];
   fjs.parentNode!.insertBefore(js, fjs);
 }
+function getLogger(msg: string) {
+  return function() {
+    console.log(msg, arguments);
+  };
+}
+function onDeviceReady() {
+  console.log('Cordova deviceready called');
+  if (isIos) {
+    console.log('Loading WebRTC for iOS');
+    window.cordova.plugins.iosrtc.registerGlobals();
+    videoChat.updateIsSupported();
+  }
+  console.log('Push Notifications: ', window.PushNotification);
+  const push = window.PushNotification.init({
+    android: {
+      senderID: '144595629077',
+      clearBadge: true,
+      clearNotifications: true
+      // sound & vibrate are true by default
+    },
+    ios: {
+      alert: true,
+      badge: true,
+      sound: true,
+      clearBadge: true
+    },
+    windows: {}
+  });
+  push.on('registration', (data: any) => {
+    console.log('The phone gap reg id is ', data.registrationId);
+    ourFirebase.addFcmToken(data.registrationId, isIos ? 'ios' : 'android');
+  });
+  push.on('notification', (data: any) => {
+    console.log('PushNotification notification:', data);
+    // TODO(Priyanka): show a message that when the user clicks on it will open the correct match.
+    // E.g., you can use a http://www.material-ui.com/#/components/snackbar
+    // You can put the data you need in our store (by dispatching an action),
+    // and have the AppHeader show the snackbar accordingly
+    // (e.g., if we're already in that match, then no need to do anything).
+
+    // Note that there are 3 types of notifications: coldstart, background, and foreground.
+    // (Look at data.additionalData.foreground and data.additionalData.coldstart)
+    // From a coldstart or background (when the user already saw the notification), then
+    // you don't need to show anything and you can just navigate to the match (if you're not in it already).
+    // From foreground, you should show the snackbar, and let the user decide whether they want to click on it.
+  });
+  push.on('error', getLogger('PushNotification error:'));
+  // Clear all push message notifications when app is openen.
+  // iOS does that automatically, but android doesn't.
+  if (push.clearAllNotifications) {
+    // it was added in later versions.
+    try {
+      push.clearAllNotifications(
+        getLogger('clearAllNotifications done'),
+        getLogger('clearAllNotifications error')
+      );
+    } catch (e) {
+      /*
+      I once got on Android 4.4.4: 
+      ReferenceError: NPObject deleted
+        at getNativeApiProvider (https://learninggames.club/?phonegapPlugins=v105:3:9247)
+        at androidExec (https://learninggames.club/?phonegapPlugins=v105:3:9919)
+        at e.clearAllNotifications (https://learninggames.club/?phonegapPlugins=v105:4:6161)
+      */
+      console.error('clearAllNotifications:', e);
+    }
+  }
+
+  delayReactRender();
+}
 
 // check for mobile and load cordova
-if (isIos || isAndroid) {
-  document.addEventListener(
-    'deviceready',
-    () => {
-      console.log('Cordova deviceready called');
-      if (isIos) {
-        console.log('Loading WebRTC for iOS');
-        window.cordova.plugins.iosrtc.registerGlobals();
-        videoChat.updateIsSupported();
-      }
-      console.log('Push Notifications: ', window.PushNotification);
-      // initPushNotification();
-      const push = window.PushNotification.init({
-        android: { senderID: '144595629077' },
-        ios: {
-          alert: 'true',
-          badge: true,
-          sound: 'false'
-        },
-        windows: {}
-      });
-      push.on('registration', (data: any) => {
-        console.log('The phone gap reg id is ' + data.registrationId);
-        if (isIos) {
-          ourFirebase.addFcmToken(data.registrationId, 'ios');
-        } else {
-          ourFirebase.addFcmToken(data.registrationId, 'android');
-        }
-      });
-      delayReactRender();
-    },
-    false
-  );
+if (isApp) {
+  document.addEventListener('deviceready', onDeviceReady, false);
 }
 if (isIos) {
   createScript('cordova', 'cordova/phonegapPlugins.ios.v1.min.js');
@@ -142,8 +193,3 @@ if (isIos) {
 } else {
   delayReactRender();
 }
-
-// TODO: create a trivial site (like https://tribe.pm/) with two buttons for downloading
-// the app from PlayStore / AppStore.
-// TODO: create app icons and app screenshots.
-// TODO: request permissions as late as possible, and the app should still be usable even without them.

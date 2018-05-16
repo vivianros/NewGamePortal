@@ -1,10 +1,8 @@
 import * as React from 'react';
 
-import * as firebase from 'firebase';
 import { ourFirebase } from '../services/firebase';
 import TextField from 'material-ui/TextField';
 import RaisedButton from 'material-ui/RaisedButton';
-import RefreshIndicator from 'material-ui/RefreshIndicator';
 import AutoComplete from 'material-ui/AutoComplete';
 // import IconButton from 'material-ui/IconButton';
 import MenuItem from 'material-ui/MenuItem';
@@ -28,7 +26,7 @@ interface Props {
   myUserId: string;
   history: History;
   countries: Country[];
-  countryNames: String[];
+  countryNames: string[];
 }
 
 interface DataSourceNode {
@@ -51,44 +49,37 @@ const style: React.CSSProperties = {
   // padding: 10
 };
 
+const defaultSearchText = 'United States(+1)';
+const defaultText = 'United States(+1)';
+const defaultCode = 'US';
+
 class Login extends React.Component<Props, {}> {
   confirmationResult: any = null;
 
   state = {
     displayName: '',
     selectField: { value: '', label: '' },
-    code: 'US',
-    defaultCode: 'US',
+    code: defaultCode,
     phoneNum: '',
     veriCode: '',
     errorText: '',
     veriErrorText: '',
     confirmationResult: null,
     veriDisabled: true,
-    status: loadingType.hide,
-    searchText: 'United States(+1)',
-    defaultText: 'United States(+1)',
-    onSelect: false,
     clearVisibility: visibilityType.visible,
-    countries: [],
-    countryNames: [],
     loginOnce: false
   };
 
-  // clearStyle: React.CSSProperties = {
-  //   visibility: this.state.clearVisibility
-  //  };
-
   handleClickOutsideSelect = () => {
-    if (this.props.countryNames.indexOf(this.state.searchText)) {
+    if (this.props.countryNames.indexOf(defaultSearchText)) {
       this.setState({
-        searchText: this.state.defaultText,
-        code: this.state.defaultCode
+        searchText: defaultText,
+        code: defaultCode
       });
     }
   };
 
-  handleUpdateInput = (searchText: String) => {
+  handleUpdateInput = (searchText: string) => {
     if (searchText.length > 0) {
       this.setState({
         clearVisibility: visibilityType.visible
@@ -116,14 +107,14 @@ class Login extends React.Component<Props, {}> {
         });
       } else {
         this.setState({
-          searchText: this.state.defaultText,
-          code: this.state.defaultCode
+          searchText: defaultText,
+          code: defaultCode
         });
       }
     } else {
       this.setState({
-        searchText: this.state.defaultText,
-        code: this.state.defaultCode
+        searchText: defaultText,
+        code: defaultCode
       });
     }
   };
@@ -166,14 +157,7 @@ class Login extends React.Component<Props, {}> {
       let phoneNumber = result.internationalFormat;
       if (!this.state.loginOnce) {
         ourFirebase
-          .signInWithPhoneNumber(
-            phoneNumber,
-            this.state.code,
-            this.state.displayName,
-            new firebase.auth.RecaptchaVerifier('recaptcha-container', {
-              size: 'invisible'
-            })
-          )
+          .signInWithPhoneNumber(phoneNumber, this.state.code, this.state.displayName)
           .then((_confirmationResult: any) => {
             this.confirmationResult = _confirmationResult;
           });
@@ -223,22 +207,14 @@ class Login extends React.Component<Props, {}> {
               listStyle={{ maxHeight: 200, overflow: 'auto' }}
               floatingLabelText="Country"
               hintText="Select Country"
-              searchText={this.state.searchText}
+              searchText={defaultSearchText}
               onUpdateInput={this.handleUpdateInput}
               onNewRequest={this.handleNewRequest}
               dataSource={this.props.countries.map((country: Country) => ({
-                text:
-                  country.code +
-                  '-' +
-                  country.name +
-                  '(+' +
-                  country.callingCode +
-                  ')',
+                text: country.code + '-' + country.name + '(+' + country.callingCode + ')',
                 value: (
                   <MenuItem
-                    primaryText={
-                      country.name + ' (+' + country.callingCode + ')'
-                    }
+                    primaryText={country.name + ' (+' + country.callingCode + ')'}
                     secondaryText={country.emojiCode}
                   />
                 )
@@ -260,11 +236,7 @@ class Login extends React.Component<Props, {}> {
             />
             <br />
             <br />
-            <RaisedButton
-              label="get verification code"
-              primary={true}
-              onClick={this.onLogin}
-            />
+            <RaisedButton label="get verification code" primary={true} onClick={this.onLogin} />
             <br />
             <br />
             <TextField
@@ -284,13 +256,6 @@ class Login extends React.Component<Props, {}> {
               onClick={this.sendCode}
               disabled={this.state.veriDisabled}
             />
-            <RefreshIndicator
-              size={50}
-              left={window.screen.width / 2}
-              top={window.screen.height / 2}
-              loadingColor="#FF9800"
-              status={this.state.status}
-            />
           </div>
         </div>
       </div>
@@ -300,12 +265,11 @@ class Login extends React.Component<Props, {}> {
 
 const mapStateToProps = (state: StoreState) => {
   const countries: Country[] = [];
-  const countryNames: String[] = [];
+  const countryNames: string[] = [];
   for (let country of data) {
     const l = country.code.codePointAt(0);
     const r = country.code.codePointAt(1);
-    const emoji =
-      String.fromCodePoint(l + 127397) + String.fromCodePoint(r + 127397);
+    const emoji = String.fromCodePoint(l + 127397) + String.fromCodePoint(r + 127397);
     countries.push({
       code: country.code,
       name: country.name,

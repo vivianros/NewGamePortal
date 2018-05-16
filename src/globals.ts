@@ -5,14 +5,12 @@ import {
   MatchInfo,
   PhoneNumInfo,
   UserIdToInfo,
-  ContactWithUserId
+  ContactWithUserId,
+  Image
 } from './types';
 
 require('./js/trans-compiled');
-declare function parsePhoneNumber(
-  phoneNumber: String,
-  regionCode: String
-): PhoneNumInfo;
+declare function parsePhoneNumber(phoneNumber: string, regionCode: string): PhoneNumInfo;
 
 // global Window class doesn't come with Image()
 // so we have to add it ourselves
@@ -34,10 +32,7 @@ declare global {
   }
 }
 
-export function checkPhoneNumber(
-  phoneNumber: String,
-  regionCode: String
-): PhoneNumInfo | null {
+export function checkPhoneNumber(phoneNumber: string, regionCode: string): PhoneNumInfo | null {
   try {
     return parsePhoneNumber(phoneNumber, regionCode);
   } catch (e) {
@@ -54,6 +49,7 @@ export const platform: PlatformType =
 export const isTests = platform === 'tests';
 export const isIos = platform === 'ios';
 export const isAndroid = platform === 'android';
+export const isApp = isIos || isAndroid;
 export const isWeb = platform === 'web';
 
 export function checkCondition(desc: any, cond: boolean) {
@@ -76,10 +72,7 @@ export function getValues<T>(obj: IdIndexer<T>): T[] {
   return vals;
 }
 
-export function objectMap<T, U>(
-  o: IdIndexer<T>,
-  f: (t: T, id: string) => U
-): IdIndexer<U> {
+export function objectMap<T, U>(o: IdIndexer<T>, f: (t: T, id: string) => U): IdIndexer<U> {
   const res: IdIndexer<U> = {};
   Object.keys(o).forEach(k => (res[k] = f(o[k], k)));
   return res;
@@ -101,10 +94,7 @@ export function getOpponents(
   }));
 }
 
-export function getOpponentIds(
-  participantsUserIds: string[],
-  myUserId: string
-): string[] {
+export function getOpponentIds(participantsUserIds: string[], myUserId: string): string[] {
   const opponentIds = participantsUserIds.concat();
   const myIndex = participantsUserIds.indexOf(myUserId);
   opponentIds.splice(myIndex, 1);
@@ -112,10 +102,7 @@ export function getOpponentIds(
 }
 
 export const UNKNOWN_NAME = 'Unknown name';
-export function mapUserIdToName(
-  userId: string,
-  userIdToInfo: UserIdToInfo
-): string {
+export function mapUserIdToName(userId: string, userIdToInfo: UserIdToInfo): string {
   const info = userIdToInfo[userId];
   if (info) {
     return info.displayName;
@@ -123,16 +110,11 @@ export function mapUserIdToName(
   return UNKNOWN_NAME;
 }
 
-export function findMatch(
-  matchesList: MatchInfo[],
-  matchId: string
-): MatchInfo | undefined {
+export function findMatch(matchesList: MatchInfo[], matchId: string): MatchInfo | undefined {
   return matchesList.find(match => match.matchId === matchId);
 }
 
-export function getPhoneNumberToUserInfo(
-  userIdToInfo: UserIdToInfo
-): UserIdToInfo {
+export function getPhoneNumberToUserInfo(userIdToInfo: UserIdToInfo): UserIdToInfo {
   const phoneNumberToUserInfo: UserIdToInfo = {};
   for (let [_userId, userInfo] of Object.entries(userIdToInfo)) {
     const phoneNumber = userInfo.phoneNumber;
@@ -183,7 +165,7 @@ export function deepFreezeHelper<T>(obj: T, cycleDetector: Set<any>): T {
 
 export function shallowCopy<T>(obj: T): T {
   if (Array.isArray(obj)) {
-    return <any> obj.slice(0);
+    return <any>obj.concat();
   }
   return Object.assign({}, obj);
 }
@@ -192,8 +174,12 @@ export function deepCopy<T>(obj: T): T {
 }
 function checkForCycle(obj: any, cycleDetector: Set<any>) {
   if (cycleDetector.has(obj)) {
-    throw new Error("Found cycle containing obj=" + prettyJson(obj)
-      + " objects-traversed=" + prettyJson(cycleDetector) );
+    throw new Error(
+      'Found cycle containing obj=' +
+        prettyJson(obj) +
+        ' objects-traversed=' +
+        prettyJson(cycleDetector)
+    );
   }
   cycleDetector.add(obj);
 }
@@ -210,12 +196,12 @@ function deepCopyHelper<T>(obj: T, cycleDetector: Set<any>): T {
 
 export const studentsUsers: ContactWithUserId[] = [
   {
-    userId: "HIfpdxPucXXUEffw8V4yezzUtKv1",
+    userId: 'HIfpdxPucXXUEffw8V4yezzUtKv1',
     phoneNumber: '+19175730795',
     name: 'Yoav Zibin'
   },
   {
-    userId: "Kw9aO9pQSQYMKuTXcBGe3bT1qoh1",
+    userId: 'Kw9aO9pQSQYMKuTXcBGe3bT1qoh1',
     phoneNumber: '+17326476905',
     name: 'Herbert Li'
   },
@@ -244,4 +230,82 @@ export const studentsUsers: ContactWithUserId[] = [
     phoneNumber: '+19174021465',
     name: 'Yiwei Wu'
   }
+];
+
+// I want to hide the app header in portrait mode in phones
+export function shouldHideAppHeader() {
+  return window.innerHeight < window.innerWidth && window.innerHeight < 500;
+}
+
+function getInnerHeight() {
+  // There are also 64px for the AppHeader.
+  // TODO: hide AppHeader when width > height , and just show the back and menu buttons.
+  return window.innerHeight - (shouldHideAppHeader() ? 0 : 64);
+}
+function getInnerWidth() {
+  return window.innerWidth;
+}
+
+export function getBoardRatio(boardImage: Image) {
+  const isFullWidth = isBoardFullWidth(boardImage);
+  // I want to make sure we have at least 160px left for the video chat.
+  const innerWidth = getInnerWidth() - (isFullWidth ? 0 : 160);
+  const innerHeight = getInnerHeight() - (isFullWidth ? 160 : 0);
+
+  const boardWidth = boardImage.width;
+  const boardHeight = boardImage.height;
+  const widthRatio = innerWidth / boardWidth;
+  const heightRatio = innerHeight / boardHeight;
+  return Math.min(widthRatio, heightRatio);
+}
+
+// The board will either be full width or full height
+export function isBoardFullWidth(boardImage: Image) {
+  const innerWidth = getInnerWidth();
+  const innerHeight = getInnerHeight();
+
+  const boardWidth = boardImage.width;
+  const boardHeight = boardImage.height;
+  const widthRatio = innerWidth / boardWidth;
+  const heightRatio = innerHeight / boardHeight;
+  return widthRatio < heightRatio;
+}
+
+// Our video chat is always rectangular (width === height).
+export function getVideoChatWidthHeight(boardImage: Image, participantsNum: number) {
+  const innerWidth = getInnerWidth();
+  const innerHeight = getInnerHeight();
+  const ratio = getBoardRatio(boardImage);
+
+  const isFullWidth = isBoardFullWidth(boardImage);
+  const remainingWidth = isFullWidth ? innerWidth : innerWidth - ratio * boardImage.width;
+  const remainingHeight = !isFullWidth ? innerHeight : innerHeight - ratio * boardImage.height;
+  // We iterate over all possible number of rows (1..participantsNum),
+  // and find the max widthHeight;
+  console.log('remainingWidth=', remainingWidth, ' remainingHeight=', remainingHeight);
+  let widthHeight = 0;
+  for (let rowsNum = 1; rowsNum <= participantsNum; rowsNum++) {
+    const height = remainingHeight / rowsNum;
+    const width = remainingWidth / Math.ceil(participantsNum / rowsNum);
+    console.log('rowsNum=', rowsNum, ' height=', height, ' width=', width);
+    widthHeight = Math.max(widthHeight, Math.min(height, width));
+  }
+  return widthHeight - 8; // To get 4px margins.
+}
+
+export function setLoadingSpinnerVisible(isVisible: boolean) {
+  document.getElementById('loadingSpinner')!.style.display = isVisible ? 'block' : 'none';
+}
+
+export const playersColors: string[] = [
+  'blue',
+  'red',
+  'brown',
+  'purple',
+  'pink',
+  'yellow',
+  'orange',
+  'silver',
+  'green',
+  'gray'
 ];

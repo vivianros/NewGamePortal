@@ -1,9 +1,6 @@
 import * as React from 'react';
 import { connect } from 'react-redux';
-import {
-  StoreState,
-  CSSPropertiesIndexer
-} from '../types/index';
+import { StoreState, CSSPropertiesIndexer } from '../types/index';
 import { MatchInfo, UserIdToInfo } from '../types';
 import FloatingActionButton from 'material-ui/FloatingActionButton';
 import ContentAdd from 'material-ui/svg-icons/content/add';
@@ -11,6 +8,7 @@ import { List, ListItem } from 'material-ui/List';
 import Avatar from 'material-ui/Avatar';
 import { Link } from 'react-router-dom';
 import { getOpponents } from '../globals';
+import { darkBlack } from 'material-ui/styles/colors';
 
 const styles: CSSPropertiesIndexer = {
   root: {
@@ -30,8 +28,8 @@ const styles: CSSPropertiesIndexer = {
   button: {
     flex: 1,
     position: 'fixed',
-    bottom: 10,
-    right: 0,
+    bottom: 15,
+    right: 15,
     alignSelf: 'flex-end'
     // float: 'right'
   }
@@ -54,11 +52,7 @@ class MatchesList extends React.Component<Props, {}> {
     }
     return (
       ' with ' +
-      getOpponents(
-        participantsUserIds,
-        this.props.myUserId,
-        this.props.userIdToInfo
-      )
+      getOpponents(participantsUserIds, this.props.myUserId, this.props.userIdToInfo)
         .map(opponent => opponent.name)
         .join(', ')
     );
@@ -82,16 +76,14 @@ class MatchesList extends React.Component<Props, {}> {
                   // will cause warning with just tile.matchId
                   primaryText={tile.game.gameName}
                   secondaryText={
-                    'Last played ' +
-                    timeSince(tile.lastUpdatedOn) +
-                    ' ago' +
-                    this.getOpponentNames(tile.participantsUserIds)
+                    <p>
+                      <span style={{ color: darkBlack }}>{timeSince(tile.lastUpdatedOn)} ago</span>
+                      {this.getOpponentNames(tile.participantsUserIds)}
+                    </p>
                   }
+                  secondaryTextLines={2}
                   rightAvatar={
-                    <Avatar
-                      src={tile.game.screenShot.downloadURL}
-                      style={styles.icon}
-                    />
+                    <Avatar src={tile.game.screenShot.downloadURL} style={styles.icon} />
                   }
                 />
               </Link>

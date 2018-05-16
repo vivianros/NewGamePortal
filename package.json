@@ -5,11 +5,11 @@
   "private": true,
   "dependencies": {
     "@types/prop-types": "^15.5.2",
+    "firebase": "^4.13.0",
     "konva": "^2.0.0",
     "npm": "^6.0.0",
     "raven-js": "^3.24.0",
     "react": "^16.3.1",
-    "react-dice": "^1.0.1",
     "react-dom": "^16.3.1",
     "react-konva": "^1.7.1",
     "react-redux": "^5.0.7",
@@ -17,7 +17,8 @@
     "react-router-dom": "^4.2.2",
     "react-scripts-ts": "2.13.0",
     "redux": "^3.7.2",
-    "redux-logger": "^3.0.6"
+    "redux-logger": "^3.0.6",
+    "xmlhttprequest": "^1.8.0"
   },
   "scripts": {
     "start": "react-scripts-ts start",
@@ -30,7 +31,7 @@
   },
   "lint-staged": {
     "src/**/*.{ts,tsx,js,jsx,json,css}": [
-      "prettier --single-quote --write",
+      "prettier --print-width 100 --single-quote --write",
       "git add"
     ]
   },

@@ -20,7 +20,6 @@ interface VideoNameElement {
 }
 
 export namespace videoChat {
-
   interface UserIdToSignals {
     [userId: string]: SignalMsg[];
   }
@@ -50,8 +49,7 @@ export namespace videoChat {
       method: 'PUT',
       body: '',
       headers: new Headers({
-        Authorization:
-          'Basic ' + btoa('yoavzibin:ffca05a6-372c-11e8-b68d-bdfb507d2f2f')
+        Authorization: 'Basic ' + btoa('yoavzibin:ffca05a6-372c-11e8-b68d-bdfb507d2f2f')
       })
     })
       .then(res => res.json())
@@ -86,12 +84,21 @@ export namespace videoChat {
       return;
     }
     // When you stop a video track, it can never be reopened.
-    // set localMediaStream to be null 
-    // (note that stop is not implemented in the iosrtc plugin)
+    // set localMediaStream to be null
+    console.log('stopping localMediaStreams');
     if (!isIos) {
-      localMediaStream.getVideoTracks()[0].stop();
+      for (let videoStream of localMediaStream.getVideoTracks()) {
+        videoStream.stop();
+      }
+      for (let audioStream of localMediaStream.getAudioTracks()) {
+        audioStream.stop();
+      }
+    } else {
+      localMediaStream.stop();
     }
     localMediaStream = null;
+    // also close my own peer connection
+    closeMyPeerConnection(opponentUserIds[0]);
 
     // refresh video elements if using the iOS app
     if (isIos) {
@@ -112,6 +119,8 @@ export namespace videoChat {
         audio: true,
         video: {
           facingMode: 'user',
+          // I know the video element size might be smaller/bigger,
+          // but this is just a recommendation anyway.
           width: 150,
           height: 150
         }
@@ -130,37 +139,42 @@ export namespace videoChat {
 
   export function updateOpponents(_opponentIds: string[]) {
     console.log('updateOpponents:', _opponentIds);
+    if (!localMediaStream) {
+      console.error('No localMediaStream');
+      return;
+    }
     const oldOpponentIds = opponentUserIds;
-    opponentUserIds = _opponentIds.slice();
+
+    // Close all old connections.
+    for (let oldUserId of oldOpponentIds) {
+      // if (opponentUserIds.indexOf(oldUserId) === -1) {
+      closeMyPeerConnection(oldUserId);
+      // }
+    }
+
+    opponentUserIds = _opponentIds;
     let index = 0;
     localVideoElement = getVideoElement(index++);
     setVideoStream(localVideoElement, checkNotNull(localMediaStream!));
-
-    // Close old connections that aren't going to be reused.
-    for (let oldUserId of oldOpponentIds) {
-      if (opponentUserIds.indexOf(oldUserId) === -1) {
-        closeMyPeerConnection(oldUserId);
-      }
-    }
 
     // Create/reuse connections.
     remoteVideoElements = [];
     for (let userId of opponentUserIds) {
       const remoteVideoElement = getVideoElement(index++);
       remoteVideoElements.push(remoteVideoElement);
-      const oldPeerConnection = peerConnections[userId];
-      if (oldPeerConnection && oldOpponentIds.indexOf(userId) !== -1) {
-        // reuse and set video stream
-        const stream = oldPeerConnection.getRemoteStream();
-        if (stream) {
-          receivedVideoStream(userId, stream);
-        } else {
-          showUserName(userId);
-        }
-      } else {
-        createMyPeerConnection(userId, waitingSignals[userId]);
-        delete waitingSignals[userId];
-      }
+      // const oldPeerConnection = peerConnections[userId];
+      // if (oldPeerConnection && oldOpponentIds.indexOf(userId) !== -1) {
+      //   // reuse and set video stream
+      //   const stream = oldPeerConnection.getRemoteStream();
+      //   if (stream) {
+      //     receivedVideoStream(userId, stream);
+      //   } else {
+      //     showUserName(userId);
+      //   }
+      // } else {
+      createMyPeerConnection(userId, waitingSignals[userId]);
+      delete waitingSignals[userId];
+      // }
     }
   }
 
@@ -240,13 +254,17 @@ export namespace videoChat {
         }
       };
       pc.oniceconnectionstatechange = evt => {
-        console.log('oniceconnectionstatechange: ', evt);
+        console.log('oniceconnectionstatechange: ', pc.iceConnectionState, evt);
         stateChangeHandler(pc.iceConnectionState);
+      };
+      pc.onsignalingstatechange = (evt: any) => {
+        console.log('onsignalingstatechange: ', pc.signalingState, evt);
+        stateChangeHandler(pc.signalingState);
       };
       if ('onconnectionstatechange' in pc) {
         const anyPc = <any>pc;
         anyPc.onconnectionstatechange = (evt: any) => {
-          console.log('onconnectionstatechange: ', evt);
+          console.log('onconnectionstatechange: ', anyPc.iceConnectionState, evt);
           stateChangeHandler(anyPc.connectionState);
         };
       }
@@ -270,11 +288,7 @@ export namespace videoChat {
     }
 
     sendSignal(signalType: SignalType, signal: any) {
-      ourFirebase.sendSignal(
-        this.targetUserId,
-        signalType,
-        JSON.stringify(signal)
-      );
+      ourFirebase.sendSignal(this.targetUserId, signalType, JSON.stringify(signal));
     }
 
     didGetSdp() {
@@ -292,7 +306,7 @@ export namespace videoChat {
       this.pc.close();
       // refresh video elements if using the iOS app
       if (isIos) {
-        window.cordova.iosrtc.refreshVideos();
+        window.cordova.plugins.iosrtc.refreshVideos();
       }
     }
 
@@ -357,22 +371,17 @@ export namespace videoChat {
 
   function createMyPeerConnection(userId: string, signals: SignalMsg[]) {
     if (opponentUserIds.indexOf(userId) === -1) {
-      console.warn(
-        'createMyPeerConnection for non-opponent',
-        opponentUserIds,
-        userId
-      );
+      console.warn('createMyPeerConnection for non-opponent', opponentUserIds, userId);
       return;
     }
     showUserName(userId);
-    console.log(
-      'createMyPeerConnection targetUserId=',
-      userId,
-      ' signals=',
-      signals
-    );
+    console.log('createMyPeerConnection targetUserId=', userId, ' signals=', signals);
     closeMyPeerConnection(userId);
-    peerConnections[userId] = new MyPeerConnection(userId, signals);
+    if (!localMediaStream) {
+      console.error("No localMediaStream, can't recreate MyPeerConnection");
+    } else {
+      peerConnections[userId] = new MyPeerConnection(userId, signals);
+    }
   }
 
   function receivedVideoStream(userId: string, stream: MediaStream) {
@@ -451,10 +460,7 @@ export namespace videoChat {
   function showUserName(userId: string) {
     setVideoOrNameVisible(getRemoteVideoElement(userId), false);
   }
-  function setVideoOrNameVisible(
-    videoName: VideoNameElement,
-    isVideoVisible: boolean
-  ) {
+  function setVideoOrNameVisible(videoName: VideoNameElement, isVideoVisible: boolean) {
     console.log(isVideoVisible ? 'Showing video' : 'Showing name');
     const { video, name } = videoName;
     video.style.display = isVideoVisible ? '' : 'none';
@@ -462,31 +468,17 @@ export namespace videoChat {
   }
   function setVideoStream(videoName: VideoNameElement, stream: MediaStream) {
     setVideoOrNameVisible(videoName, true);
-    const { video, name } = videoName;
+    const { video } = videoName;
     if ('srcObject' in video) {
       video.srcObject = stream;
     } else {
-      (<any>video).src = window.URL
-        ? window.URL.createObjectURL(stream)
-        : stream;
+      (<any>video).src = window.URL ? window.URL.createObjectURL(stream) : stream;
     }
 
-    setWidthHeight(video, '150px', '150px');
-    setWidthHeight(name, '150px', '150px');
     // for iOS: tell the plugin to handle your video tag manually
     if (isIos) {
       window.cordova.plugins.iosrtc.observeVideo(video);
       window.cordova.plugins.iosrtc.refreshVideos();
     }
-  }
-
-  function setWidthHeight(elem: HTMLElement, width: string, height: string) {
-    const style = elem.style;
-    style.width = width;
-    style.height = height;
-    style.minWidth = '150px';
-    style.minHeight = '150px';
-    style.maxWidth = '150px';
-    style.maxHeight = '150px';
   }
 }

@@ -1,61 +1,98 @@
 import * as React from 'react';
 import Board from './Board';
 import VideoArea from './VideoArea';
+import { ourFirebase } from '../services/firebase';
 import {
   StoreState,
   MatchInfo,
   GameSpec,
   UserIdToInfo,
   CSSPropertiesIndexer,
-  RouterMatchParams
+  RouterMatchParams,
+  WindowDimensions
 } from '../types/index';
 import { connect } from 'react-redux';
 import { History } from 'history';
-import { getOpponents, findMatch } from '../globals';
+import {
+  getOpponents,
+  findMatch,
+  isBoardFullWidth,
+  getBoardRatio,
+  setLoadingSpinnerVisible
+} from '../globals';
 import { videoChat } from '../services/videoChat';
 import RaisedButton from 'material-ui/RaisedButton';
 import Chip from 'material-ui/Chip';
+import PersonAdd from 'material-ui/svg-icons/social/person-add';
+import StartCall from 'material-ui/svg-icons/communication/call';
+// import EndCall from 'material-ui/svg-icons/communication/call-end';
+import { green500 } from 'material-ui/styles/colors';
 
-interface PlayingScreenProps {
+interface PlayingScreenPropsFromState {
   myUserId: string;
   userIdToInfo: UserIdToInfo;
-  matchInfo: MatchInfo;
-  gameSpec: GameSpec;
+  matchInfo: MatchInfo | undefined;
+  gameSpec: GameSpec | undefined;
+
+  // To ensure the component rerenders when dimensions change.
+  windowDimensions: WindowDimensions | undefined;
+}
+interface PlayingScreenProps extends PlayingScreenPropsFromState {
   match: RouterMatchParams;
   history: History;
 }
 
 const styles: CSSPropertiesIndexer = {
-  playingScreenContainer: {
-    overflowY: 'scroll'
+  playingScreenContainerRow: {
+    display: 'flex',
+    alignItems: 'center',
+    flexDirection: 'row'
+  },
+  playingScreenContainerColumn: {
+    display: 'flex',
+    alignItems: 'center',
+    flexDirection: 'column'
+  },
+  chipsRow: {
+    display: 'flex',
+    flexDirection: 'row',
+    flexWrap: 'wrap'
+  },
+  chipsColumn: {
+    display: 'flex',
+    flexDirection: 'column',
+    flexWrap: 'wrap'
   },
   chip: {
-    margin: 4,
+    margin: 4
   },
-  wrapper: {
-    display: 'flex',
-    flexWrap: 'wrap',
+  chatArea: {
+    flexGrow: 1,
+    margin: 2
   },
+  inviteFriendBtn: {
+    margin: 10
+  }
 };
 
 class PlayingScreen extends React.Component<PlayingScreenProps, {}> {
   state = {
-    videoChatButton: false
+    isCallOngoing: false
   };
+
   render() {
     if (!this.props.matchInfo) {
       return <div>The matchId doesn't exist.</div>;
     } else if (!this.props.gameSpec) {
-      let gameSpecScreenShot = this.props.matchInfo!.game.screenShot
-        .downloadURL;
-      let screenShotWidth = this.props.matchInfo!.game.screenShot.width;
-      let screenShotHeight = this.props.matchInfo!.game.screenShot.height;
-      const ratio = window.innerWidth / screenShotWidth;
-      document.getElementById('loadingSpinner')!.style.display = 'block';
+      const screenShot = this.props.matchInfo!.game.screenShot;
+      let gameSpecScreenShot = screenShot.downloadURL;
+      let screenShotWidth = screenShot.width;
+      let screenShotHeight = screenShot.height;
+      const ratio = getBoardRatio(screenShot);
+      setLoadingSpinnerVisible(true);
       return (
         <>
           <div style={styles.playingScreenContainer}>
-            <div>The Gamespec has not been loaded.</div>
             <img
               height={screenShotHeight * ratio}
               width={screenShotWidth * ratio}
@@ -66,7 +103,7 @@ class PlayingScreen extends React.Component<PlayingScreenProps, {}> {
       );
     }
 
-    document.getElementById('loadingSpinner')!.style.display = 'none';
+    setLoadingSpinnerVisible(false);
     const participantsUserIds = this.props.matchInfo!.participantsUserIds;
     const opponents = getOpponents(
       participantsUserIds,
@@ -75,64 +112,74 @@ class PlayingScreen extends React.Component<PlayingScreenProps, {}> {
     );
 
     const showVideoArea =
-      opponents.length >= 1 &&
-      videoChat.isSupported() &&
-      this.state.videoChatButton;
+      opponents.length >= 1 && videoChat.isSupported() && this.state.isCallOngoing;
     console.log('showVideoArea=', showVideoArea, 'opponents=', opponents);
     const videoArea = !showVideoArea ? null : (
-      <VideoArea opponents={opponents} />
-    );
-    const inviteFriend = this.props.matchInfo!.participantsUserIds.length > 1 ? (
-      <RaisedButton
-        onClick={() => {
-          this.setState({
-            videoChatButton: !this.state.videoChatButton
-          });
-        }}
-        label={
-          this.state.videoChatButton
-            ? 'Stop VideoChatting'
-            : 'Start VideoChatting'
-        }
-        primary={true}
+      <VideoArea
+        opponents={opponents}
+        gameSpec={this.props.gameSpec}
+        windowDimensions={this.props.windowDimensions}
       />
-    ) : (
-      <RaisedButton
+    );
+    // I removed the leave option (you can click on back arrow to leave)
+    const inviteFriend =
+      this.props.matchInfo!.participantsUserIds.length > 1 ? (
+        this.state.isCallOngoing ? null : (
+          <RaisedButton
+            style={{ color: green500 }}
             onClick={() => {
-              this.props.history.push('/contactsList/' + this.props.matchInfo!.matchId);
+              this.setState({
+                isCallOngoing: !this.state.isCallOngoing
+              });
+              ourFirebase.pingOpponentsInMatch(this.props.matchInfo!);
             }}
-            label="Invite a friend to play"
+            label={'Call'}
+            icon={<StartCall color={green500} />}
             primary={true}
-      />
-    );
-    const opponentsArea = this.state.videoChatButton ? null : (
-      <div style={styles.wrapper}>
-      {opponents.map(
-        (opponent) => (
-        <Chip
-          style={styles.chip}
-        >
-         {opponent.name}
-        </Chip>
+          />
         )
-      )}
+      ) : (
+        <RaisedButton
+          onClick={() => {
+            this.props.history.push('/contactsList/' + this.props.matchInfo!.matchId);
+          }}
+          label="Invite"
+          style={styles.inviteFriendBtn}
+          icon={<PersonAdd />}
+          primary={true}
+        />
+      );
+    const boardImage = this.props.gameSpec.board;
+    const isFullWidth = isBoardFullWidth(boardImage);
+    console.log('isFullWidth=', isFullWidth);
+    const opponentsArea = this.state.isCallOngoing ? null : (
+      <div style={isFullWidth ? styles.chipsRow : styles.chipsColumn}>
+        {opponents.map(opponent => (
+          <Chip key={opponent.userId} style={styles.chip}>
+            {opponent.name}
+          </Chip>
+        ))}
       </div>
     );
     return (
-      <div style={styles.playingScreenContainer}>
-        <Board
-          matchInfo={this.props.matchInfo!}
-          gameSpec={this.props.gameSpec}
-        />
-        {inviteFriend}
-        {opponentsArea}
-        {videoArea}
+      <div
+        style={isFullWidth ? styles.playingScreenContainerColumn : styles.playingScreenContainerRow}
+      >
+        <Board matchInfo={this.props.matchInfo!} gameSpec={this.props.gameSpec} />
+        <div style={styles.chatArea}>
+          {inviteFriend}
+          {opponentsArea}
+          {videoArea}
+        </div>
       </div>
     );
   }
 }
 
-const mapStateToProps = (state: StoreState, ownProps: PlayingScreenProps) => {
+const mapStateToProps = (
+  state: StoreState,
+  ownProps: PlayingScreenProps
+): PlayingScreenPropsFromState => {
   let matchInfo: MatchInfo | undefined = findMatch(
     state.matchesList,
     ownProps.match.params.matchIdInRoute
@@ -145,7 +192,8 @@ const mapStateToProps = (state: StoreState, ownProps: PlayingScreenProps) => {
     matchInfo: matchInfo,
     gameSpec: gameSpec,
     myUserId: state.myUser.myUserId,
-    userIdToInfo: state.userIdToInfo
+    userIdToInfo: state.userIdToInfo,
+    windowDimensions: state.windowDimensions
   };
 };
 

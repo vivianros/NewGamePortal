@@ -1,5 +1,10 @@
 import { store, dispatch, persistedOldStore } from '../stores';
-import * as firebase from 'firebase';
+
+import * as firebase from 'firebase/app';
+// include services that you want
+import 'firebase/auth';
+import 'firebase/database';
+
 import * as Raven from 'raven-js';
 import {
   checkCondition,
@@ -12,7 +17,9 @@ import {
   getPhoneNumberToUserInfo,
   shallowCopy,
   deepFreeze,
-  deepCopy
+  deepCopy,
+  checkPhoneNumber,
+  isApp
 } from '../globals';
 import {
   BooleanIndexer,
@@ -34,7 +41,9 @@ import {
   AnyIndexer,
   CardVisibility,
   ContactWithUserId,
-  UserIdToInfo
+  UserIdToInfo,
+  NumberIndexer,
+  Contact
 } from '../types';
 import { Action, checkMatchStateInStore } from '../reducers';
 
@@ -66,10 +75,7 @@ export namespace ourFirebase {
   }
   let fcmTokensToBeStored: FcmToken[] = [];
 
-  export function addFcmToken(
-    fcmToken: string,
-    platform: 'web' | 'ios' | 'android'
-  ) {
+  export function addFcmToken(fcmToken: string, platform: 'web' | 'ios' | 'android') {
     // Can be called multiple times if the token is updated.
     checkCondition('addFcmToken', /^.{10,200}$/.test(fcmToken));
     fcmTokensToBeStored.push({ fcmToken, platform });
@@ -112,26 +118,25 @@ export namespace ourFirebase {
     });
   }
 
-  export function getMessaging() {
-    return firebase.messaging();
-  }
-
   // See https://firebase.google.com/docs/auth/web/phone-auth
   let myCountryCodeForSignInWithPhoneNumber = '';
   let displayNameForSignIn = '';
   export function signInWithPhoneNumber(
     phoneNumber: string,
     countryCode: string,
-    displayName: string,
-    applicationVerifier: firebase.auth.ApplicationVerifier
+    displayName: string
   ): Promise<any> {
     checkFunctionIsCalledOnce('signInWithPhoneNumber');
     checkCondition('countryCode', countryCode.length === 2);
+    const applicationVerifier: firebase.auth.ApplicationVerifier = new firebase.auth.RecaptchaVerifier(
+      'recaptcha-container',
+      {
+        size: 'invisible'
+      }
+    );
     myCountryCodeForSignInWithPhoneNumber = countryCode;
     displayNameForSignIn = displayName;
-    return firebase
-      .auth()
-      .signInWithPhoneNumber(phoneNumber, applicationVerifier);
+    return firebase.auth().signInWithPhoneNumber(phoneNumber, applicationVerifier);
   }
 
   function getTimestamp(): number {
@@ -141,10 +146,7 @@ export namespace ourFirebase {
   let phoneNumberForSignInAnonymously: string = '';
   let resolveAfterLoginForTests: (() => void) | null = null;
   export let allPromisesForTests: Promise<any>[] | null = null;
-  export function signInAnonymously(
-    phoneNumberForTest: string,
-    displayName: string
-  ) {
+  export function signInAnonymously(phoneNumberForTest: string, displayName: string) {
     phoneNumberForSignInAnonymously = phoneNumberForTest;
     displayNameForSignIn = displayName;
     addPromiseForTests(firebase.auth().signInAnonymously());
@@ -167,11 +169,14 @@ export namespace ourFirebase {
     if (persistedOldStore && uid === persistedOldStore.myUser.myUserId) {
       dispatch({ restoreOldStore: persistedOldStore });
       if (!myCountryCodeForSignInWithPhoneNumber) {
-        myCountryCodeForSignInWithPhoneNumber =
-          persistedOldStore.myUser.myCountryCode;
+        myCountryCodeForSignInWithPhoneNumber = persistedOldStore.myUser.myCountryCode;
       }
       if (!displayNameForSignIn) {
         displayNameForSignIn = persistedOldStore.myUser.myName;
+      }
+      if (Object.keys(persistedOldStore.phoneNumberToContact).length > 0) {
+        // Refresh contacts (but with a bit of delay because it's computationally heavy)
+        setTimeout(fetchContacts, 1000);
       }
     }
     if (!displayNameForSignIn) {
@@ -183,11 +188,10 @@ export namespace ourFirebase {
         photoURL: null
       });
     }
-    const phoneNumber = user.phoneNumber
-      ? user.phoneNumber
-      : phoneNumberForSignInAnonymously;
+    const phoneNumber = user.phoneNumber ? user.phoneNumber : phoneNumberForSignInAnonymously;
 
     Raven.setUserContext({
+      name: displayNameForSignIn,
       phoneNumber: phoneNumber,
       countryCode: myCountryCodeForSignInWithPhoneNumber,
       userId: uid
@@ -222,9 +226,7 @@ export namespace ourFirebase {
     const updates: AnyIndexer = {};
     updates['privateFields/createdOn'] = getTimestamp(); // It's actually "last logged in on timestamp"
     updates['privateFields/phoneNumber'] = phoneNumber;
-    updates[
-      'privateFields/countryCode'
-    ] = myCountryCodeForSignInWithPhoneNumber;
+    updates['privateFields/countryCode'] = myCountryCodeForSignInWithPhoneNumber;
     updates['publicFields/displayName'] = displayNameForSignIn;
     refUpdate(getRef(`/gamePortal/gamePortalUsers/${uid}`), updates);
 
@@ -233,15 +235,12 @@ export namespace ourFirebase {
       timestamp: getTimestamp()
     };
     if (phoneNumber) {
-      checkPhoneNum(phoneNumber);
-      refSet(
-        getRef(`/gamePortal/phoneNumberToUserId/${phoneNumber}`),
-        phoneNumberFbr
-      );
+      checkPhoneNumIsValid(phoneNumber);
+      refSet(getRef(`/gamePortal/phoneNumberToUserId/${phoneNumber}`), phoneNumberFbr);
     }
   }
 
-  export function checkPhoneNum(phoneNum: string) {
+  function checkPhoneNumIsValid(phoneNum: string) {
     const isValidNum = /^[+][0-9]{5,20}$/.test(phoneNum);
     checkCondition('phone num', isValidNum);
   }
@@ -249,28 +248,23 @@ export namespace ourFirebase {
   // Eventually dispatches the action setGamesList.
   function fetchGamesList() {
     assertLoggedIn();
-    return getOnce('/gamePortal/gamesInfoAndSpec/gameInfos').then(
-      (gameInfos: fbr.GameInfos) => {
-        if (!gameInfos) {
-          throw new Error('no games!');
-        }
-        const gameList: GameInfo[] = getValues(gameInfos).map(gameInfoFbr => {
-          const screenShotImage = gameInfoFbr.screenShotImage;
-          const gameInfo: GameInfo = {
-            gameSpecId: gameInfoFbr.gameSpecId,
-            gameName: gameInfoFbr.gameName,
-            screenShot: convertImage(
-              gameInfoFbr.screenShotImageId,
-              screenShotImage
-            ),
-            wikipediaUrl: gameInfoFbr.wikipediaUrl || ''
-          };
-          return gameInfo;
-        });
-        gameList.sort((g1, g2) => g1.gameName.localeCompare(g2.gameName));
-        dispatch({ setGamesList: gameList });
+    return getOnce('/gamePortal/gamesInfoAndSpec/gameInfos').then((gameInfos: fbr.GameInfos) => {
+      if (!gameInfos) {
+        throw new Error('no games!');
       }
-    );
+      const gameList: GameInfo[] = getValues(gameInfos).map(gameInfoFbr => {
+        const screenShotImage = gameInfoFbr.screenShotImage;
+        const gameInfo: GameInfo = {
+          gameSpecId: gameInfoFbr.gameSpecId,
+          gameName: gameInfoFbr.gameName,
+          screenShot: convertImage(gameInfoFbr.screenShotImageId, screenShotImage),
+          wikipediaUrl: gameInfoFbr.wikipediaUrl || ''
+        };
+        return gameInfo;
+      });
+      gameList.sort((g1, g2) => g1.gameName.localeCompare(g2.gameName));
+      dispatch({ setGamesList: gameList });
+    });
   }
 
   // Eventually dispatches the action updateGameSpecs.
@@ -288,20 +282,149 @@ export namespace ourFirebase {
       console.log('fetchGameSpec:', gameSpecId);
     }
     isFetchingGameSpec[gameSpecId] = true;
-    getOnce(
-      `/gamePortal/gamesInfoAndSpec/gameSpecsForPortal/${gameSpecId}`
-    ).then((gameSpecF: fbr.GameSpecForPortal) => {
-      if (!isTests) {
-        console.log('Got game spec for:', game);
+    getOnce(`/gamePortal/gamesInfoAndSpec/gameSpecsForPortal/${gameSpecId}`).then(
+      (gameSpecF: fbr.GameSpecForPortal) => {
+        if (!isTests) {
+          console.log('Got game spec for:', game);
+        }
+        if (!gameSpecF) {
+          throw new Error('no game spec!');
+        }
+        const action: Action = {
+          updateGameSpecs: fixGameSpecs(convertGameSpecForPortal(gameSpecId, gameSpecF))
+        };
+        dispatch(action);
       }
-      if (!gameSpecF) {
-        throw new Error('no game spec!');
+    );
+  }
+
+  function fixGameSpecs(gameSpecs: GameSpecs): GameSpecs {
+    const elementIdToResizingFactor: NumberIndexer = {
+      // Aeroplane Chess gameSpecId: "-KzIu__PqVGdQhAlileQ"
+      '-KzItgbiXd89CURCoXe5': 1.5, // increase that element ID by 20%
+      '-KzItocCLqCMbFLpFDzb': 1.5,
+      '-KzItsMbQZMzCjk8rKSP': 1.5,
+      '-KzItkd4gsI3JZlsaZUZ': 1.5,
+      // Snakes and Ladders gameSpecId: "-KzKeLTztuc88-oLtUjZ"
+      '-KxLHdaHqRj2RTr-f_9z': 1.5,
+      '-KxLHdaHqRj2RTr-f_9y': 1.5,
+      '-KxLHdaHqRj2RTr-f_9w': 1.5,
+      '-KxLHdaHqRj2RTr-f_9x': 1.5
+    };
+
+    // Want to resize all elements of the following gamespecs
+    const gameSpecElementsToResize = [
+      '-L-m0_fVl_1k-KtOhfeI', // Go
+      '-L-db4M-NKnZlguWs7xv' // Clue
+    ];
+    // Get all elementIds and add them to elementIdToResizingFactor
+    for (let gameSpecId of gameSpecElementsToResize) {
+      const spec = gameSpecs.gameSpecIdToGameSpec[gameSpecId];
+      if (spec) {
+        for (let piece of spec.pieces) {
+          const elementId = piece.element.elementId;
+          console.log('resizing for', gameSpecId);
+          elementIdToResizingFactor[elementId] = 1.5;
+        }
       }
-      const action: Action = {
-        updateGameSpecs: convertGameSpecForPortal(gameSpecId, gameSpecF)
-      };
-      dispatch(action);
-    });
+    }
+
+    // For the listed game specs, all their elements should be hidden at start of game
+    const switchCardImages = [
+      '-KxLz3GDxUi9QADh3jN0', // Simply Ingenious
+      '-L-db4M-NKnZlguWs7xv', // Clue
+      '-L01xDqdP8hN1PCJuwI8', // Texas Hold 'em
+      '-L01xupWIg2jOCp9Sh_K', // Crazy Eights
+      '-L0DEfpWO-G2hX3Wcp8-', // Spades
+      '-L0r6qHkR2fkeCk6B7zB' // Bananagrams
+    ];
+    for (let gameSpecId of switchCardImages) {
+      const spec = gameSpecs.gameSpecIdToGameSpec[gameSpecId];
+      if (spec) {
+        console.log('Changing images for', gameSpecId);
+        for (let piece of spec.pieces) {
+          const images = piece.element.images;
+          if (images.length < 2) {
+            continue;
+          }
+          const temp = images[0];
+          images[0] = images[1];
+          images[1] = temp;
+        }
+      }
+    }
+
+    for (let [elementId, element] of Object.entries(gameSpecs.elementIdToElement)) {
+      let resizingFactor = elementIdToResizingFactor[elementId];
+      if (resizingFactor) {
+        element.height *= resizingFactor;
+        element.width *= resizingFactor;
+      }
+      // All standard elements should be draggable.
+      if (element.elementKind === 'standard') {
+        element.isDraggable = true;
+      }
+    }
+
+    // Verify all cards have a deck.
+    for (let [_gameSpecId, gameSpec] of Object.entries(gameSpecs.gameSpecIdToGameSpec)) {
+      let newPieces: Piece[] = [];
+      let haveCopiedRedPieceForNewBoku = false;
+      let haveCopiedBlackPieceForNewBoku = false;
+      for (let piece of gameSpec.pieces) {
+        const isCard = gameSpecs.elementIdToElement[piece.element.elementId].elementKind === 'card';
+        checkCondition('cards', (piece.deckPieceIndex !== -1) === isCard);
+        // for -KxLz3CaPRPIBc-0mRP7, Chess, make elementKind to be "standard for all of them"
+        if (_gameSpecId === '-KxLz3CaPRPIBc-0mRP7') {
+          if (piece.element.elementId === '-KxLHdYYTHiX9HtmGdhj') {
+            let newPiece = deepCopy(piece);
+            newPiece.initialState.x = 28;
+            newPiece.initialState.y = 7.3;
+            newPieces!.push(newPiece);
+          } else if (piece.element.elementId === '-KxLHdYX937bfhOU04NP') {
+            piece.initialState.x = 48.8;
+            piece.initialState.y = 7.3;
+          } else if (piece.element.elementId === '-KxLHdYLpBVqGTr6C9-C') {
+            piece.initialState.x = 38;
+            piece.initialState.y = 7.3;
+          }
+          if (piece.element.elementKind.endsWith('Deck')) {
+            // ignore piece;
+          } else if (piece.element.elementKind !== 'standard') {
+            piece.element.elementKind = 'standard';
+          }
+        }
+
+        // for -KxLz3FKTdapLIInm8GT, New Boku, make more pieces"
+        if (_gameSpecId === '-KxLz3FKTdapLIInm8GT') {
+          if (
+            piece.element.elementId === '-KxLHdZEbxmx1JxNADd_' &&
+            !haveCopiedBlackPieceForNewBoku
+          ) {
+            for (let i = 0; i < 24; i++) {
+              let newPiece = deepCopy(piece);
+              newPieces!.push(newPiece);
+            }
+            haveCopiedBlackPieceForNewBoku = true;
+          } else if (
+            piece.element.elementId === '-KxLHdZFYwCkxuYejHug' &&
+            !haveCopiedRedPieceForNewBoku
+          ) {
+            for (let i = 0; i < 24; i++) {
+              let newPiece = deepCopy(piece);
+              newPieces!.push(newPiece);
+            }
+            haveCopiedRedPieceForNewBoku = true;
+          }
+        }
+      }
+      if (newPieces!) {
+        for (let newPiece of newPieces!) {
+          gameSpec.pieces.push(newPiece!);
+        }
+      }
+    }
+    return gameSpecs;
   }
 
   function convertGameSpecForPortal(
@@ -309,9 +432,8 @@ export namespace ourFirebase {
     gameSpecF: fbr.GameSpecForPortal
   ): GameSpecs {
     const { images, elements, gameSpec } = gameSpecF;
-    const imageIdToImage: ImageIdToImage = objectMap(
-      images,
-      (img: fbr.Image, imageId: string) => convertImage(imageId, img)
+    const imageIdToImage: ImageIdToImage = objectMap(images, (img: fbr.Image, imageId: string) =>
+      convertImage(imageId, img)
     );
     let elementIdToElement: ElementIdToElement = objectMap(
       elements,
@@ -320,12 +442,7 @@ export namespace ourFirebase {
     );
 
     const gameSpecIdToGameSpec: GameSpecIdToGameSpec = {
-      [gameSpecId]: convertGameSpec(
-        gameSpecId,
-        gameSpec,
-        imageIdToImage,
-        elementIdToElement
-      )
+      [gameSpecId]: convertGameSpec(gameSpecId, gameSpec, imageIdToImage, elementIdToElement)
     };
     return {
       imageIdToImage: imageIdToImage,
@@ -359,11 +476,7 @@ export namespace ourFirebase {
       downloadURL: img.downloadURL
     };
   }
-  function convertElement(
-    elementId: string,
-    element: fbr.Element,
-    imgs: ImageIdToImage
-  ): Element {
+  function convertElement(elementId: string, element: fbr.Element, imgs: ImageIdToImage): Element {
     return {
       elementId: elementId,
       height: element.height,
@@ -391,9 +504,7 @@ export namespace ourFirebase {
     return {
       gameSpecId: gameSpecId,
       board: checkNotNull(imgs[gameSpec.board.imageId]),
-      pieces: convertObjectToArray(gameSpec.pieces).map(piece =>
-        convertPiece(piece, elements)
-      )
+      pieces: convertObjectToArray(gameSpec.pieces).map(piece => convertPiece(piece, elements))
     };
   }
 
@@ -409,16 +520,16 @@ export namespace ourFirebase {
 
   function getMatchMembershipsRef(userId?: string) {
     const uid = userId ? userId : getUserId();
-    return getRef(
-      `/gamePortal/gamePortalUsers/${uid}/privateButAddable/matchMemberships`
-    );
+    return getRef(`/gamePortal/gamePortalUsers/${uid}/privateButAddable/matchMemberships`);
   }
 
   const listeningToMatchIds: string[] = [];
   const receivedMatches: IdIndexer<MatchInfo> = {};
+  const ignoredMatches: BooleanIndexer = {};
 
   function getMatchMemberships(matchMemberships: fbr.MatchMemberships) {
     if (!matchMemberships) {
+      dispatchSetMatchesList(); // In case I have deleted all my matches in another device.
       return;
     }
     const matchIds = Object.keys(matchMemberships);
@@ -441,13 +552,13 @@ export namespace ourFirebase {
   }
 
   export function listenToMatch(matchId: string) {
-    checkCondition(
-      'listeningToMatchIds',
-      listeningToMatchIds.indexOf(matchId) === -1
-    );
+    checkCondition('listeningToMatchIds', listeningToMatchIds.indexOf(matchId) === -1);
     listeningToMatchIds.push(matchId);
     return getRef('/gamePortal/matches/' + matchId).on('value', snap => {
       if (!snap) {
+        return;
+      }
+      if (ignoredMatches[matchId]) {
         return;
       }
       const matchFb: fbr.Match = snap.val();
@@ -455,43 +566,40 @@ export namespace ourFirebase {
         return;
       }
       const uid = getUserId();
-      if (
-        receivedMatches[matchId] &&
-        receivedMatches[matchId].updatedByUserId === uid
-      ) {
+      if (receivedMatches[matchId] && receivedMatches[matchId].updatedByUserId === uid) {
         return; // Ignore my own updates
       }
       const gameSpecId = matchFb.gameSpecId;
-      const newMatchStates = convertPiecesStateToMatchState(
-        matchFb.pieces,
-        gameSpecId
-      );
+      const newMatchStates = convertPiecesStateToMatchState(matchFb.pieces, gameSpecId);
       const participants = matchFb.participants;
       // Sort by participant's index (ascending participantIndex order)
       const participantsUserIds = Object.keys(participants).sort(
-        (uid1, uid2) =>
-          participants[uid1].participantIndex -
-          participants[uid2].participantIndex
+        (uid1, uid2) => participants[uid1].participantIndex - participants[uid2].participantIndex
       );
       fetchDisplayNameForUserIds(participantsUserIds);
 
       const gameInfo = findGameInfo(gameSpecId);
       if (!gameInfo) {
-        return; // I've deleted some crappy games, but there are some existing matches.
-      }
-      fetchGameSpec(gameInfo);
-      const match: MatchInfo = {
-        matchId: matchId,
-        gameSpecId: gameSpecId,
-        game: gameInfo,
-        participantsUserIds: participantsUserIds,
-        lastUpdatedOn: matchFb.lastUpdatedOn,
-        updatedByUserId: matchFb.updatedByUserId || uid,
-        matchState: newMatchStates
-      };
+        // I've deleted some crappy games, but there are some existing matches.
+        ignoredMatches[matchId] = true;
+      } else {
+        fetchGameSpec(gameInfo);
+        const match: MatchInfo = {
+          matchId: matchId,
+          gameSpecId: gameSpecId,
+          game: gameInfo,
+          participantsUserIds: participantsUserIds,
+          lastUpdatedOn: matchFb.lastUpdatedOn,
+          updatedByUserId: matchFb.updatedByUserId || uid,
+          matchState: newMatchStates
+        };
 
-      receivedMatches[matchId] = match;
-      if (Object.keys(receivedMatches).length >= listeningToMatchIds.length) {
+        receivedMatches[matchId] = match;
+      }
+      if (
+        Object.keys(receivedMatches).length + Object.keys(ignoredMatches).length >=
+        listeningToMatchIds.length
+      ) {
         dispatchSetMatchesList();
       }
     });
@@ -578,17 +686,14 @@ export namespace ourFirebase {
     };
     refUpdate(getMatchMembershipsRef(toUserId), matchMemberships);
   }
+  export function deleteMatchMembership(toUserId: string, matchId: string) {
+    refUpdate(getMatchMembershipsRef(toUserId), { [matchId]: null });
+  }
 
-  const MAX_USERS_IN_MATCH = 8;
+  export const MAX_USERS_IN_MATCH = 8;
   export function addParticipant(match: MatchInfo, userId: string) {
-    checkCondition(
-      'addParticipant',
-      match.participantsUserIds.indexOf(userId) === -1
-    );
-    checkCondition(
-      'MAX_USERS_IN_MATCH',
-      match.participantsUserIds.length < MAX_USERS_IN_MATCH
-    );
+    checkCondition('addParticipant', match.participantsUserIds.indexOf(userId) === -1);
+    checkCondition('MAX_USERS_IN_MATCH', match.participantsUserIds.length < MAX_USERS_IN_MATCH);
     const matchId = match.matchId;
     const participantNumber = match.participantsUserIds.length;
     const participantUserObj: fbr.ParticipantUser = {
@@ -603,21 +708,36 @@ export namespace ourFirebase {
     addMatchMembership(userId, matchId);
   }
 
+  export function leaveMatch(match: MatchInfo) {
+    const uid = getUserId();
+    const matchId = match.matchId;
+    const myIndex = match.participantsUserIds.indexOf(uid);
+    checkCondition('leaveMatch', myIndex >= 0);
+    const deleteMatch = match.participantsUserIds.length === 1;
+    deleteMatchMembership(uid, matchId);
+    ignoredMatches[matchId] = true;
+    delete receivedMatches[matchId];
+    if (deleteMatch) {
+      refSet(getRef(`/gamePortal/matches/${match.matchId}`), null);
+    } else {
+      refSet(getRef(`/gamePortal/matches/${match.matchId}/participants/${uid}`), null);
+    }
+    dispatchSetMatchesList();
+  }
+
   // Call this after resetting a match or shuffling a deck.
   export function updateMatchState(match: MatchInfo) {
+    console.log('updateMatchState: match=', match.matchId);
     const matchState: MatchState = match.matchState;
     checkCondition('updateMatchState', matchState.length > 0);
     const updates: AnyIndexer = {};
-    updates['pieces'] = convertMatchStateToPiecesState(
-      matchState,
-      match.gameSpecId
-    );
+    updates['pieces'] = convertMatchStateToPiecesState(matchState, match.gameSpecId);
     updateMatchUsingCopy(match, updates);
   }
 
   // Call this after updating a single piece.
   export function updatePieceState(match: MatchInfo, pieceIndex: number) {
-    console.log('updatePieceState');
+    console.log('updatePieceState: pieceIndex=', pieceIndex);
     const pieceState: PieceState = match.matchState[pieceIndex];
     const updates: AnyIndexer = {};
     updates[`pieces/${pieceIndex}`] = convertPieceState(pieceState);
@@ -650,8 +770,8 @@ export namespace ourFirebase {
     if (!piecesState) {
       return [];
     }
-    const newMatchStates: MatchState = convertObjectToArray(piecesState).map(
-      state => convertFbrPieceState(state.currentState)
+    const newMatchStates: MatchState = convertObjectToArray(piecesState).map(state =>
+      convertFbrPieceState(state.currentState)
     );
     checkMatchState(newMatchStates, gameSpecId);
     return newMatchStates;
@@ -672,11 +792,7 @@ export namespace ourFirebase {
       cardVisibilityPerIndex: cardVisibilityPerIndex
     };
   }
-  function validateInteger(
-    num: number,
-    fromInclusive: number,
-    toInclusive: number
-  ) {
+  function validateInteger(num: number, fromInclusive: number, toInclusive: number) {
     return validateNumber(num, fromInclusive, toInclusive, true);
   }
   function validateNumber(
@@ -728,9 +844,7 @@ export namespace ourFirebase {
     const userId = getUserId();
     const matchId = match.matchId;
     refSet(
-      getRef(
-        `/gamePortal/matches/${matchId}/participants/${userId}/pingOpponents`
-      ),
+      getRef(`/gamePortal/matches/${matchId}/participants/${userId}/pingOpponents`),
       getTimestamp()
     );
   }
@@ -739,7 +853,7 @@ export namespace ourFirebase {
     const uid = getUserId();
     const currentContacts = checkNotNull(contactsToBeStored!);
     const currentPhoneNumbers = Object.keys(currentContacts);
-    currentPhoneNumbers.forEach(phoneNumber => checkPhoneNum(phoneNumber));
+    currentPhoneNumbers.forEach(phoneNumber => checkPhoneNumIsValid(phoneNumber));
     // Max contactName is 20 chars
     currentPhoneNumbers.forEach(phoneNumber => {
       const contact = currentContacts[phoneNumber];
@@ -771,10 +885,7 @@ export namespace ourFirebase {
       }
     });
     if (Object.keys(updates).length > 0) {
-      refUpdate(
-        getRef(`/gamePortal/gamePortalUsers/${uid}/privateFields/contacts`),
-        updates
-      );
+      refUpdate(getRef(`/gamePortal/gamePortalUsers/${uid}/privateFields/contacts`), updates);
     }
 
     dispatch({ updatePhoneNumberToContact: currentContacts });
@@ -791,10 +902,7 @@ export namespace ourFirebase {
     });
   }
 
-  function addToUserIdToInfo(
-    userIdToInfo: UserIdToInfo,
-    phoneNumber: string
-  ): Promise<void> {
+  function addToUserIdToInfo(userIdToInfo: UserIdToInfo, phoneNumber: string): Promise<void> {
     return getUserIdFromPhoneNumber(phoneNumber).then(userId => {
       if (!userId) {
         return;
@@ -817,37 +925,33 @@ export namespace ourFirebase {
     dispatch({ updateUserIdToInfo: userIdInfo });
   }
 
-  export function searchPhoneNumber(
-    phoneNumber: string
-  ): Promise<ContactWithUserId | null> {
+  export function searchPhoneNumber(phoneNumber: string): Promise<ContactWithUserId | null> {
     return getUserIdFromPhoneNumber(phoneNumber).then(userId => {
       if (!userId) {
         return null;
       }
-      let promise: Promise<ContactWithUserId | null> = getDisplayNameForUserId(
-        userId
-      ).then(displayName => {
-        addUserInfo(userId, displayName);
-        return {
-          userId: userId,
-          phoneNumber: phoneNumber,
-          name: displayName
-        };
-      });
+      let promise: Promise<ContactWithUserId | null> = getDisplayNameForUserId(userId).then(
+        displayName => {
+          addUserInfo(userId, displayName);
+          return {
+            userId: userId,
+            phoneNumber: phoneNumber,
+            name: displayName
+          };
+        }
+      );
       return promise;
     });
   }
 
   function getDisplayNameForUserId(userId: string): Promise<string> {
-    return getOnce(
-      `/gamePortal/gamePortalUsers/${userId}/publicFields/displayName`
-    ).then(displayName => displayName || UNKNOWN_NAME);
+    return getOnce(`/gamePortal/gamePortalUsers/${userId}/publicFields/displayName`).then(
+      displayName => displayName || UNKNOWN_NAME
+    );
   }
 
-  function getUserIdFromPhoneNumber(
-    phoneNumber: string
-  ): Promise<string | null> {
-    checkPhoneNum(phoneNumber);
+  function getUserIdFromPhoneNumber(phoneNumber: string): Promise<string | null> {
+    checkPhoneNumIsValid(phoneNumber);
     return getOnce(`/gamePortal/phoneNumberToUserId/` + phoneNumber).then(
       (phoneNumberFbrObj: fbr.PhoneNumber) => {
         if (!phoneNumberFbrObj) {
@@ -861,9 +965,7 @@ export namespace ourFirebase {
   // Dispatches setSignals.
   function listenToSignals() {
     const userId = getUserId();
-    const ref = getRef(
-      `/gamePortal/gamePortalUsers/${userId}/privateButAddable/signals`
-    );
+    const ref = getRef(`/gamePortal/gamePortalUsers/${userId}/privateButAddable/signals`);
     ref.on('value', snap => {
       if (!snap) {
         return;
@@ -918,6 +1020,72 @@ export namespace ourFirebase {
     signalFbrRef.onDisconnect().remove();
   }
 
+  declare let ContactFindOptions: any;
+  export function fetchContacts() {
+    if (!isApp) {
+      return;
+    }
+    if (!navigator.contacts) {
+      Raven.captureMessage('No navigator.contacts!');
+      return;
+    }
+    console.log('Fetching contacts');
+
+    var options = new ContactFindOptions();
+    options.filter = '';
+    options.multiple = true;
+    options.desiredFields = [
+      navigator.contacts.fieldType.displayName,
+      navigator.contacts.fieldType.phoneNumbers
+    ];
+    options.hasPhoneNumber = true;
+    const onSuccess = (contacts: any[]) => {
+      console.log('Successfully got contacts: ', contacts);
+      let myCountryCode = store.getState().myUser.myCountryCode;
+      if (!myCountryCode) {
+        console.error('Missing country code');
+        return;
+      }
+      if (!contacts) {
+        console.error('Missing contacts');
+        return;
+      }
+      let currentContacts: PhoneNumberToContact = {};
+      for (let contact of contacts) {
+        if (!contact.phoneNumbers) {
+          continue;
+        }
+        for (let phoneNumber of contact.phoneNumbers) {
+          const localNumber = phoneNumber['value'].replace(/[^0-9]/g, '');
+          const phoneInfo = checkPhoneNumber(localNumber, myCountryCode);
+          if (
+            phoneInfo &&
+            phoneInfo.isPossibleNumber &&
+            phoneInfo.isValidNumber &&
+            phoneInfo.maybeMobileNumber
+          ) {
+            const internationalNumber = phoneInfo.e164Format;
+            if (checkPhoneNumIsValid(internationalNumber)) {
+              console.error('e164Format returned illegal phone number:', internationalNumber);
+              continue;
+            }
+            const newContact: Contact = {
+              name: contact.displayName,
+              phoneNumber: internationalNumber
+            };
+            currentContacts[internationalNumber] = newContact;
+          }
+        }
+      }
+      storeContacts(currentContacts);
+    };
+
+    const onError = () => {
+      console.error('Error fetching contacts');
+    };
+    navigator.contacts.find(['*'], onSuccess, onError, options);
+  }
+
   function storeFcmTokensAfterLogin() {
     if (fcmTokensToBeStored.length === 0) {
       return;
@@ -932,9 +1100,7 @@ export namespace ourFirebase {
     }
     fcmTokensToBeStored = [];
     refUpdate(
-      getRef(
-        `/gamePortal/gamePortalUsers/${getUserId()}/privateFields/fcmTokens/`
-      ),
+      getRef(`/gamePortal/gamePortalUsers/${getUserId()}/privateFields/fcmTokens/`),
       updates
     );
   }
@@ -976,11 +1142,7 @@ export namespace ourFirebase {
     return (err: Error | null) => {
       // on complete
       if (err) {
-        let msg =
-          'Failed writing to ref=' +
-          ref.toString() +
-          ` value=` +
-          prettyJson(val);
+        let msg = 'Failed writing to ref=' + ref.toString() + ` value=` + prettyJson(val);
         console.error(msg);
         Raven.captureMessage(msg);
       }
